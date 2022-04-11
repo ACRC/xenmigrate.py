@@ -18,6 +18,8 @@ import fnmatch
 import os
 import subprocess
 import sys
+import re
+import tarfile
 
 def docmd(cmd):
     """
@@ -363,6 +365,94 @@ def reftoraw(refdir,rawfile,gz=False):
     else:
         print 'ERROR: refdir '+refdir+' does not exist'
 
+def xvatoraw(xvafile,rawfile,gz=False):
+    """
+    take an xva file and create a raw importable file
+    """
+    if debug:
+        print 'xvafile           :',refdir
+        print 'to raw file       :',rawfile
+        print 'gzip              :',gz
+    blocksize=1024*1024
+    notification=float(2**30) # 2**30=GB
+    if gz:
+        notification=notification/4
+
+    if os.path.isfile(xvafile):
+        if not os.path.exists(rawfile):
+            try:
+                filenum=0
+                noticetick=notification/(2**30)
+                print '\nRW notification every: '+str(noticetick)+'GB'
+                notification=notification/blocksize
+                if gz:
+                    dest=gzip.GzipFile(rawfile,'wb')
+                else:
+                    dest=open(rawfile,'wb')
+                sys.stdout.write('Converting: ')
+
+                xvatar = tarfile.open(xvafile, mode='r|*')
+
+                if gz:
+                    blankblock=''
+                    for loop in range(blocksize):
+                        blankblock+='\x00'
+                
+                last = 0
+                xvaentry = xvatar.next()
+
+                # Files we want are of the form 'Ref:XXX/XXXXXXXXX'
+                data_matcher = re.compile('^Ref:\d+/(\d+)$')
+
+                while xvaentry:
+                    namematch = re.match(data_matcher, xvaentry.name)
+                    if namematch:
+                        blocknum = int(namematch.group(1))
+
+                        if (blocknum - last) > 1:
+                            # We have a gap in the blocks, so fill with 0s.
+                            if gz:
+                                for loop in range(blocknum - last - 1):
+                                    dest.write(blankblock)
+                            else:
+                                # Sparse
+                                dest.seek(blocksize * (blocknum - last - 1), 1)
+                        
+                        last = blocknum
+
+                        if (filenum+1)%notification==0:
+                            sys.stdout.write(str(((filenum+1)/notification)*noticetick)+'GBr')
+
+                        source=xvatar.extractfile(xvaentry)
+
+                        while True:
+                            data=source.read(blocksize)
+
+                            if len(data)==0:
+                                """source.close()"""
+                                #sys.stdout.write(str('\nProcessing '+refdir+filename+'...'))
+                                break # EOF
+                            dest.write(data)
+    
+                        if (filenum+1)%notification==0:
+                            sys.stdout.write('w ')
+                        sys.stdout.flush()
+                        filenum+=1
+
+                    xvaentry = xvatar.next()
+
+                print '\nSuccessful convert'
+            finally:
+                try:
+                    dest.close()
+                    """source.close()"""
+                finally:
+                    print
+        else:
+            print 'ERROR: rawfile '+rawfile+' exists'
+    else:
+        print 'ERROR: refdir '+refdir+' does not exist'
+
 def vmdktoraw(vmdkfile,rawfile,gz):
     """
     take the ref directory of an xva file and create a raw importable file
@@ -403,7 +493,7 @@ if __name__=='__main__':
     # process arguments
     from optparse import OptionParser
     parser=OptionParser(usage='%prog [-cdhiltvxz] [vmname]|[exportLVdev]|[importVolGroup]|[importdiskuuid]|[converttofile]')
-    parser.add_option('-c','--convert',action='store',type='string',dest='convert',metavar='DIR',help='convert DIR or vmdk to importable rawfile')
+    parser.add_option('-c','--convert',action='store',type='string',dest='convert',metavar='DIR',help='convert DIR, xva, or vmdk to importable rawfile')
     parser.add_option('-d','--disk',action='store_true',dest='disk',help='display vm disk uuids',default=False)
     parser.add_option('--debug',action='store_true',dest='debug',help='display debug info',default=False)
     parser.add_option('-i','--import',action='store',type='string',dest='doimport',metavar='FILE',help='import from FILE to [type=xen:importVolGroup]|\n[type=xenserver:importdiskuuid]')
@@ -515,6 +605,11 @@ if __name__=='__main__':
                 print 'convert vmdk file :',opts.convert
                 print 'to raw file       :',filename
                 vmdktoraw(opts.convert,filename,opts.gz)
+            elif opts.convert[-4:]=='.xva':
+                filename=args[0]
+                print 'convert xva file  :',opts.convert
+                print 'to raw file       :',filename
+                xvatoraw(opts.convert,filename,opts.gz)
             else:
                 print 'ERROR: unknown file convert format'
         else:
